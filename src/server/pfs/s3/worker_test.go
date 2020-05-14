@@ -270,7 +270,7 @@ func TestWorkerDriver(t *testing.T) {
 		},
 	)
 
-	testRunner(t, "worker", driver, func(t *testing.T, pachClient *client.APIClient, minioClient *minio.Client) {
+	testRunner(t, "worker", driver, func(t *testing.T, hostport string, pachClient *client.APIClient, minioClient *minio.Client) {
 		s := &workerTestState{
 			pachClient:         pachClient,
 			minioClient:        minioClient,

@@ -144,7 +144,7 @@ func fileHash(t *testing.T, name string) (int64, []byte) {
 	return fi.Size(), hashSum
 }
 
-func testRunner(t *testing.T, group string, driver Driver, runner func(t *testing.T, pachClient *client.APIClient, minioClient *minio.Client)) {
+func testRunner(t *testing.T, group string, driver Driver, runner func(t *testing.T, hostport string, pachClient *client.APIClient, minioClient *minio.Client)) {
 	server, err := Server(0, driver, &TestClientFactory{})
 	require.NoError(t, err)
 	listener, err := net.Listen("tcp", ":0")
@@ -155,15 +155,16 @@ func testRunner(t *testing.T, group string, driver Driver, runner func(t *testin
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
+	hostport := fmt.Sprintf("127.0.0.1:%d", port)
 
 	pachClient, err := client.NewForTest()
 	require.NoError(t, err)
 
-	minioClient, err := minio.NewV4(fmt.Sprintf("127.0.0.1:%d", port), "", "", false)
+	minioClient, err := minio.NewV4(hostport, "", "", false)
 	require.NoError(t, err)
 
 	t.Run(group, func(t *testing.T) {
-		runner(t, pachClient, minioClient)
+		runner(t, hostport, pachClient, minioClient)
 	})
 
 	require.NoError(t, server.Shutdown(context.Background()))

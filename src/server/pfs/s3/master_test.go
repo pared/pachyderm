@@ -415,9 +415,9 @@ func masterListObjectsRecursive(t *testing.T, pachClient *client.APIClient, mini
 	checkListObjects(t, ch, &startTime, &endTime, expectedFiles, []string{})
 }
 
-func masterAuthV2(t *testing.T, pachClient *client.APIClient, minioClient *minio.Client) {
+func masterAuthV2(t *testing.T, hostport string) {
 	// The other tests use auth V4, versus this which checks auth V2
-	minioClientV2, err := minio.NewV2("127.0.0.1:30600", "", "", false)
+	minioClientV2, err := minio.NewV2(hostport, "", "", false)
 	require.NoError(t, err)
 	_, err = minioClientV2.ListBuckets()
 	require.NoError(t, err)
@@ -428,7 +428,7 @@ func TestMasterDriver(t *testing.T) {
 		t.Skip("Skipping integration tests in short mode")
 	}
 
-	testRunner(t, "master", NewMasterDriver(), func(t *testing.T, pachClient *client.APIClient, minioClient *minio.Client) {
+	testRunner(t, "master", NewMasterDriver(), func(t *testing.T, hostport string, pachClient *client.APIClient, minioClient *minio.Client) {
 		t.Run("ListBuckets", func(t *testing.T) {
 			masterListBuckets(t, pachClient, minioClient)
 		})
@@ -496,7 +496,7 @@ func TestMasterDriver(t *testing.T) {
 			masterListObjectsRecursive(t, pachClient, minioClient)
 		})
 		t.Run("AuthV2", func(t *testing.T) {
-			masterAuthV2(t, pachClient, minioClient)
+			masterAuthV2(t, hostport)
 		})
 	})
 }
