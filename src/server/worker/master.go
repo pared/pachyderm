@@ -255,7 +255,10 @@ func (a *APIServer) spoutSpawner(pachClient *client.APIClient) error {
 
 	var dir string
 
-	// 10 to be safe
+	// Spouts typically have an open commit waiting for new data. So if the spout needs to be updated, and
+	// thus spoutSpawner is called, it might hang if the commit never gets closed. So to avoid this, we
+	// close open commits that we see here.
+	// We probably only need to check the first commit, but doing 10 to be safe
 	pachClient.ListCommitF(a.pipelineInfo.Pipeline.Name, "", "", 10, false, func(c *pfs.CommitInfo) error {
 		if c.Finished != nil {
 			return nil
