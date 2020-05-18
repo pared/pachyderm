@@ -25,6 +25,7 @@ import (
 	"github.com/pachyderm/pachyderm/src/server/pkg/uuid"
 	"github.com/pachyderm/pachyderm/src/server/pkg/work"
 	"golang.org/x/net/context"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -67,7 +68,7 @@ func (d *driver) finishCommitNewStorageLayer(txnCtx *txnenv.TransactionContext, 
 			return err
 		}
 		// Compact the commit changes into a diff file set.
-		if err := d.compact(m, path.Join(commitPath, fileset.Diff), []string{commitPath}); err != nil {
+		if err := d.compact(context.Background(), m, path.Join(commitPath, fileset.Diff), []string{commitPath}); err != nil {
 			return err
 		}
 		// Compact the commit changes (diff file set) into the total changes in the commit's ancestry.
@@ -81,7 +82,7 @@ func (d *driver) finishCommitNewStorageLayer(txnCtx *txnenv.TransactionContext, 
 		if err != nil {
 			return err
 		}
-		if err := d.compact(m, compactSpec.Output, compactSpec.Input); err != nil {
+		if err := d.compact(context.Background(), m, compactSpec.Output, compactSpec.Input); err != nil {
 			return err
 		}
 		// (bryce) need size.
@@ -117,7 +118,7 @@ func (d *driver) withFileSet(ctx context.Context, repo, commit string, f func(*f
 		return err
 	}
 	return d.compactionQueue.RunTaskBlock(ctx, func(m *work.Master) error {
-		return d.compact(m, subFileSetPath, []string{path.Join(tmpPrefix, subFileSetPath)})
+		return d.compact(ctx, m, subFileSetPath, []string{path.Join(tmpPrefix, subFileSetPath)})
 	})
 }
 
@@ -298,16 +299,71 @@ func (fr *FileReader) drain() error {
 	return nil
 }
 
-func (d *driver) compact(master *work.Master, outputPath string, inputPrefixes []string) (retErr error) {
+func (d *driver) compact(ctx context.Context, master *work.Master, outputPath string, inputPrefixes []string) error {
+	// resolve prefixes into paths
+	inputPaths := []string{}
+	for _, inputPrefix := range inputPrefixes {
+		err := d.storage.WalkFileSets(ctx, inputPrefix, func(inputPath string) error {
+			inputPaths = append(inputPaths, inputPath)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if d.env.StorageCompactionMaxFanIn < 2 {
+		panic("StorageCompactionMaxFanIn cannot be < 2")
+	}
+	return d.compactIter(ctx, compactParams{
+		master:     master,
+		inputPaths: inputPaths,
+		outputPath: outputPath,
+		maxFanIn:   d.env.StorageCompactionMaxFanIn,
+	})
+}
+
+type compactParams struct {
+	master     *work.Master
+	outputPath string
+	inputPaths []string
+	maxFanIn   int
+}
+
+func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr error) {
 	scratch := path.Join(tmpPrefix, uuid.NewWithoutDashes())
 	defer func() {
-		if err := d.storage.Delete(context.Background(), scratch); retErr == nil {
+		if err := d.storage.Delete(ctx, scratch); retErr == nil {
 			retErr = err
 		}
 	}()
-	compaction := &pfs.Compaction{InputPrefixes: inputPrefixes}
+	// exceeds maxFanIn need to branch out
+	inputPaths := params.inputPaths
+	if len(inputPaths) > params.maxFanIn {
+		group, ctx := errgroup.WithContext(ctx)
+		for i := 0; i < params.maxFanIn; i++ {
+			start := i * params.maxFanIn
+			end := (i + 1) * params.maxFanIn
+			if end > len(inputPaths) {
+				end = len(inputPaths)
+			}
+			group.Go(func() error {
+				return d.compactIter(ctx, compactParams{
+					master:     params.master,
+					inputPaths: inputPaths[start:end],
+					outputPath: path.Join(scratch, strconv.Itoa(i)),
+					maxFanIn:   params.maxFanIn,
+				})
+			})
+		}
+		if err := group.Wait(); err != nil {
+			return err
+		}
+		inputPaths = []string{scratch}
+	}
+	// within maxFanIn, generate compaction tasks for workers
+	compaction := &pfs.Compaction{InputPrefixes: inputPaths}
 	var subtasks []*work.Task
-	if err := d.storage.Shard(master.Ctx(), inputPrefixes, func(pathRange *index.PathRange) error {
+	if err := d.storage.Shard(params.master.Ctx(), inputPaths, func(pathRange *index.PathRange) error {
 		outputPath := path.Join(scratch, strconv.Itoa(len(subtasks)))
 		shard, err := serializeShard(&pfs.Shard{
 			Compaction: compaction,
@@ -325,15 +381,12 @@ func (d *driver) compact(master *work.Master, outputPath string, inputPrefixes [
 	}); err != nil {
 		return err
 	}
-	if err := master.RunSubtasks(subtasks, func(_ context.Context, taskInfo *work.TaskInfo) error {
+	return params.master.RunSubtasks(subtasks, func(_ context.Context, taskInfo *work.TaskInfo) error {
 		if taskInfo.State == work.State_FAILURE {
 			return errors.Errorf(taskInfo.Reason)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return d.storage.Compact(master.Ctx(), outputPath, []string{scratch})
+	})
 }
 
 func serializeShard(shard *pfs.Shard) (*types.Any, error) {

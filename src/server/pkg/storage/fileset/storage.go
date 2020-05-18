@@ -227,6 +227,10 @@ func (s *Storage) Delete(ctx context.Context, fileSet string) error {
 	})
 }
 
+func (s *Storage) WalkFileSets(ctx context.Context, prefix string, f func(string) error) error {
+	return s.objC.Walk(ctx, prefix, f)
+}
+
 func applyPrefix(fileSet string) string {
 	if strings.HasPrefix(fileSet, prefix) {
 		return fileSet

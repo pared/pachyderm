@@ -75,7 +75,7 @@ type StorageConfiguration struct {
 	StoragePutFileConcurrencyLimit int    `env:"STORAGE_PUT_FILE_CONCURRENCY_LIMIT,default=100"`
 	StorageGCPolling               string `env:"STORAGE_GC_POLLING"`
 	StorageGCTimeout               string `env:"STORAGE_GC_TIMEOUT"`
-	StorageCompactionFanout        int    `env:"STORAGE_COMPACTION_FANOUT"`
+	StorageCompactionMaxFanIn      int    `env:"STORAGE_COMPACTION_MAX_FANIN"`
 }
 
 // WorkerFullConfiguration contains the full worker configuration.
