@@ -304,7 +304,7 @@ func (d *driver) compact(ctx context.Context, master *work.Master, outputPath st
 	// resolve prefixes into paths
 	inputPaths := []string{}
 	for _, inputPrefix := range inputPrefixes {
-		err := d.storage.WalkFileSets(ctx, inputPrefix, func(inputPath string) error {
+		err := d.storage.WalkFileSet(ctx, inputPrefix, func(inputPath string) error {
 			inputPaths = append(inputPaths, inputPath)
 			return nil
 		})

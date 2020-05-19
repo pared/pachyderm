@@ -75,10 +75,12 @@ func (s *Storage) New(ctx context.Context, fileSet, defaultTag string, opts ...O
 	return newFileSet(ctx, s, fileSet, s.memThreshold, defaultTag, opts...)
 }
 
+// NewWriter makes a Writer backed by the path `fileSet` in object storage.
 func (s *Storage) NewWriter(ctx context.Context, fileSet string, opts ...WriterOption) *Writer {
 	return s.newWriter(ctx, fileSet, opts...)
 }
 
+// NewReader makes a Reader backed by the path `fileSet` in object storage.
 func (s *Storage) NewReader(ctx context.Context, fileSet string, opts ...index.Option) *Reader {
 	return s.newReader(ctx, fileSet, opts...)
 }
@@ -235,7 +237,8 @@ func (s *Storage) Delete(ctx context.Context, fileSet string) error {
 	})
 }
 
-func (s *Storage) WalkFileSets(ctx context.Context, prefix string, f func(string) error) error {
+// WalkFileSet calls f with the path of every primitive fileSet under prefix.
+func (s *Storage) WalkFileSet(ctx context.Context, prefix string, f func(string) error) error {
 	return s.objC.Walk(ctx, prefix, f)
 }
 
