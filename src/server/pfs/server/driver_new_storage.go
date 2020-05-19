@@ -330,27 +330,34 @@ type compactParams struct {
 }
 
 func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr error) {
-	scratch := path.Join(tmpPrefix, uuid.NewWithoutDashes())
+	scratch1 := path.Join(tmpPrefix, uuid.NewWithoutDashes())
 	defer func() {
-		if err := d.storage.Delete(ctx, scratch); retErr == nil {
+		if err := d.storage.Delete(ctx, scratch1); retErr == nil {
 			retErr = err
 		}
 	}()
 	// exceeds maxFanIn need to branch out
 	inputPaths := params.inputPaths
 	if len(inputPaths) > params.maxFanIn {
+		childOutputPaths := []string{}
+		childSize := len(params.inputPaths) / params.maxFanIn
+		if len(params.inputPaths)%params.maxFanIn != 0 {
+			childSize++
+		}
 		group, ctx := errgroup.WithContext(ctx)
 		for i := 0; i < params.maxFanIn; i++ {
-			start := i * params.maxFanIn
-			end := (i + 1) * params.maxFanIn
+			start := i * childSize
+			end := (i + 1) * childSize
 			if end > len(inputPaths) {
 				end = len(inputPaths)
 			}
+			childOutputPath := path.Join(scratch1, strconv.Itoa(i))
+			childOutputPaths = append(childOutputPaths, childOutputPath)
 			group.Go(func() error {
 				return d.compactIter(ctx, compactParams{
 					master:     params.master,
 					inputPaths: inputPaths[start:end],
-					outputPath: path.Join(scratch, strconv.Itoa(i)),
+					outputPath: childOutputPath,
 					maxFanIn:   params.maxFanIn,
 				})
 			})
@@ -358,20 +365,26 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 		if err := group.Wait(); err != nil {
 			return err
 		}
-		inputPaths = []string{scratch}
+		inputPaths = childOutputPaths
 	}
 	// within maxFanIn, generate compaction tasks for workers
+	scratch2 := path.Join(tmpPrefix, uuid.NewWithoutDashes())
+	defer func() {
+		if err := d.storage.Delete(ctx, scratch2); retErr == nil {
+			retErr = err
+		}
+	}()
 	compaction := &pfs.Compaction{InputPrefixes: inputPaths}
 	var subtasks []*work.Task
 	if err := d.storage.Shard(params.master.Ctx(), inputPaths, func(pathRange *index.PathRange) error {
-		outputPath := path.Join(scratch, strconv.Itoa(len(subtasks)))
+		shardOutputPath := path.Join(scratch2, strconv.Itoa(len(subtasks)))
 		shard, err := serializeShard(&pfs.Shard{
 			Compaction: compaction,
 			Range: &pfs.PathRange{
 				Lower: pathRange.Lower,
 				Upper: pathRange.Upper,
 			},
-			OutputPath: outputPath,
+			OutputPath: shardOutputPath,
 		})
 		if err != nil {
 			return err
@@ -381,12 +394,15 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 	}); err != nil {
 		return err
 	}
-	return params.master.RunSubtasks(subtasks, func(_ context.Context, taskInfo *work.TaskInfo) error {
+	if err := params.master.RunSubtasks(subtasks, func(_ context.Context, taskInfo *work.TaskInfo) error {
 		if taskInfo.State == work.State_FAILURE {
 			return errors.Errorf(taskInfo.Reason)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return d.storage.Compact(ctx, params.outputPath, []string{scratch2})
 }
 
 func serializeShard(shard *pfs.Shard) (*types.Any, error) {
