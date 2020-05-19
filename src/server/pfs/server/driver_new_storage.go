@@ -299,6 +299,7 @@ func (fr *FileReader) drain() error {
 	return nil
 }
 
+// compact is the entrypoint to compaction.
 func (d *driver) compact(ctx context.Context, master *work.Master, outputPath string, inputPrefixes []string) error {
 	// resolve prefixes into paths
 	inputPaths := []string{}
@@ -329,10 +330,12 @@ type compactParams struct {
 	maxFanIn   int
 }
 
+// compactIter is one level of compaction.  It will only perform compaction
+// if len(inputPaths) < params.maxFanIn otherwise it will split inputPaths recursively.
 func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr error) {
-	scratch1 := path.Join(tmpPrefix, uuid.NewWithoutDashes())
+	scratch := path.Join(tmpPrefix, uuid.NewWithoutDashes())
 	defer func() {
-		if err := d.storage.Delete(ctx, scratch1); retErr == nil {
+		if err := d.storage.Delete(ctx, scratch); retErr == nil {
 			retErr = err
 		}
 	}()
@@ -351,7 +354,7 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 			if end > len(inputPaths) {
 				end = len(inputPaths)
 			}
-			childOutputPath := path.Join(scratch1, strconv.Itoa(i))
+			childOutputPath := path.Join(scratch, strconv.Itoa(i))
 			childOutputPaths = append(childOutputPaths, childOutputPath)
 			group.Go(func() error {
 				return d.compactIter(ctx, compactParams{
@@ -368,17 +371,25 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 		inputPaths = childOutputPaths
 	}
 	// within maxFanIn, generate compaction tasks for workers
-	scratch2 := path.Join(tmpPrefix, uuid.NewWithoutDashes())
+	return d.shardedCompact(ctx, params.master, params.outputPath, inputPaths)
+}
+
+// shardedCompact generates shards for the fileset(s) in inputPaths,
+// gives those shards to workers, and waits for them to complete
+// fan-in: spatially, and temporally to each shard will be len(inputPaths)
+// the shards are then serially concatenated, fan-in here is spatially the number of shards.
+func (d *driver) shardedCompact(ctx context.Context, master *work.Master, outputPath string, inputPaths []string) (retErr error) {
+	scratch := path.Join(tmpPrefix, uuid.NewWithoutDashes())
 	defer func() {
-		if err := d.storage.Delete(ctx, scratch2); retErr == nil {
+		if err := d.storage.Delete(ctx, scratch); retErr == nil {
 			retErr = err
 		}
 	}()
 	compaction := &pfs.Compaction{InputPrefixes: inputPaths}
 	var subtasks []*work.Task
 	var shardOutputs []string
-	if err := d.storage.Shard(params.master.Ctx(), inputPaths, func(pathRange *index.PathRange) error {
-		shardOutputPath := path.Join(scratch2, strconv.Itoa(len(subtasks)))
+	if err := d.storage.Shard(ctx, inputPaths, func(pathRange *index.PathRange) error {
+		shardOutputPath := path.Join(scratch, strconv.Itoa(len(subtasks)))
 		shardOutputs = append(shardOutputs, shardOutputPath)
 		shard, err := serializeShard(&pfs.Shard{
 			Compaction: compaction,
@@ -396,7 +407,7 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 	}); err != nil {
 		return err
 	}
-	if err := params.master.RunSubtasks(subtasks, func(_ context.Context, taskInfo *work.TaskInfo) error {
+	if err := master.RunSubtasks(subtasks, func(_ context.Context, taskInfo *work.TaskInfo) error {
 		if taskInfo.State == work.State_FAILURE {
 			return errors.Errorf(taskInfo.Reason)
 		}
@@ -404,20 +415,22 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 	}); err != nil {
 		return err
 	}
-	// serially concatenate the shards
-	return d.concatFileSets(ctx, params.outputPath, shardOutputs)
+	return d.concatFileSets(ctx, outputPath, shardOutputs)
 }
 
+// concatFileSets concatenates the filesets in inputPaths and writes the result to outputPath
+// TODO: move this to the fileset package, and error if the entries are not sorted.
 func (d *driver) concatFileSets(ctx context.Context, outputPath string, inputPaths []string) error {
-	fsw, err := d.storage.NewWriter(ctx, outputPath)
-	if err != nil {
-		return err
-	}
-	for _, inputPath := range inputPath {
+	fsw := d.storage.NewWriter(ctx, outputPath)
+	for _, inputPath := range inputPaths {
 		fsr := d.storage.NewReader(ctx, inputPath)
+		if err := fsr.Iterate(func(fr *fileset.FileReader) error {
+			return fsw.CopyFile(fr)
+		}); err != nil {
+			return err
+		}
 	}
-	d.storage.NewReader(ctx)
-	return nil
+	return fsw.Close()
 }
 
 func serializeShard(shard *pfs.Shard) (*types.Any, error) {
