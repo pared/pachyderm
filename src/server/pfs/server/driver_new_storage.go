@@ -376,8 +376,10 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 	}()
 	compaction := &pfs.Compaction{InputPrefixes: inputPaths}
 	var subtasks []*work.Task
+	var shardOutputs []string
 	if err := d.storage.Shard(params.master.Ctx(), inputPaths, func(pathRange *index.PathRange) error {
 		shardOutputPath := path.Join(scratch2, strconv.Itoa(len(subtasks)))
+		shardOutputs = append(shardOutputs, shardOutputPath)
 		shard, err := serializeShard(&pfs.Shard{
 			Compaction: compaction,
 			Range: &pfs.PathRange{
@@ -402,7 +404,20 @@ func (d *driver) compactIter(ctx context.Context, params compactParams) (retErr 
 	}); err != nil {
 		return err
 	}
-	return d.storage.Compact(ctx, params.outputPath, []string{scratch2})
+	// serially concatenate the shards
+	return d.concatFileSets(ctx, params.outputPath, shardOutputs)
+}
+
+func (d *driver) concatFileSets(ctx context.Context, outputPath string, inputPaths []string) error {
+	fsw, err := d.storage.NewWriter(ctx, outputPath)
+	if err != nil {
+		return err
+	}
+	for _, inputPath := range inputPath {
+		fsr := d.storage.NewReader(ctx, inputPath)
+	}
+	d.storage.NewReader(ctx)
+	return nil
 }
 
 func serializeShard(shard *pfs.Shard) (*types.Any, error) {

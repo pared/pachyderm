@@ -75,14 +75,14 @@ func (s *Storage) New(ctx context.Context, fileSet, defaultTag string, opts ...O
 	return newFileSet(ctx, s, fileSet, s.memThreshold, defaultTag, opts...)
 }
 
-func (s *Storage) newWriter(ctx context.Context, fileSet string, opts ...WriterOption) *Writer {
+func (s *Storage) NewWriter(ctx context.Context, fileSet string, opts ...WriterOption) *Writer {
 	fileSet = applyPrefix(fileSet)
 	return newWriter(ctx, s.objC, s.chunks, fileSet, opts...)
 }
 
 // (bryce) expose some notion of read ahead (read a certain number of chunks in parallel).
 // this will be necessary to speed up reading large files.
-func (s *Storage) newReader(ctx context.Context, fileSet string, opts ...index.Option) *Reader {
+func (s *Storage) NewReader(ctx context.Context, fileSet string, opts ...index.Option) *Reader {
 	fileSet = applyPrefix(fileSet)
 	return newReader(ctx, s.objC, s.chunks, fileSet, opts...)
 }
